@@ -1,7 +1,170 @@
-function createSelect(fd) {
+import { sampleRUM } from '../../scripts/lib-franklin.js';
+
+function generateUnique() {
+  return new Date().valueOf() + Math.random();
+}
+
+function constructPayload(form) {
+  const payload = { __id__: generateUnique() };
+  [...form.elements].forEach((fe) => {
+    if (fe.name) {
+      if (fe.type === 'radio') {
+        if (fe.checked) payload[fe.name] = fe.value;
+      } else if (fe.type === 'checkbox') {
+        if (fe.checked) payload[fe.name] = payload[fe.name] ? `${payload[fe.name]},${fe.value}` : fe.value;
+      } else if (fe.type !== 'file') {
+        payload[fe.name] = fe.value;
+      }
+    }
+  });
+  return { payload };
+}
+
+async function submissionFailure(error, form) {
+  alert(error); // TODO define error mechansim
+  form.setAttribute('data-submitting', 'false');
+  form.querySelector('button[type="submit"]').disabled = false;
+}
+
+async function prepareRequest(form) {
+  const { payload } = constructPayload(form);
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  const body = JSON.stringify({ data: payload });
+  const url = form.dataset.action;
+  return { headers, body, url };
+}
+
+async function submitForm(form) {
+  try {
+    const { headers, body, url } = await prepareRequest(form);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+    });
+    if (response.ok) {
+      sampleRUM('form:submit');
+      window.location.href = form.dataset?.redirect || 'thankyou';
+    } else {
+      const error = await response.text();
+      throw new Error(error);
+    }
+  } catch (error) {
+    submissionFailure(error, form);
+  }
+}
+
+async function handleSubmit(form) {
+  if (form.getAttribute('data-submitting') !== 'true') {
+    form.setAttribute('data-submitting', 'true');
+    await submitForm(form);
+  }
+}
+
+function setPlaceholder(element, fd) {
+  if (fd.Placeholder) {
+    element.setAttribute('placeholder', fd.Placeholder);
+  }
+}
+
+const constraintsDef = Object.entries({
+  'email|text': [['Max', 'maxlength'], ['Min', 'minlength']],
+  'number|range|date': ['Max', 'Min', 'Step'],
+  file: ['Accept', 'Multiple'],
+}).flatMap(([types, constraintDef]) => types.split('|')
+  .map((type) => [type, constraintDef.map((cd) => (Array.isArray(cd) ? cd : [cd, cd]))]));
+
+const constraintsObject = Object.fromEntries(constraintsDef);
+
+function setConstraints(element, fd) {
+  const constraints = constraintsObject[fd.Type];
+  if (constraints) {
+    constraints
+      .filter(([nm]) => fd[nm])
+      .forEach(([nm, htmlNm]) => {
+        element.setAttribute(htmlNm, fd[nm]);
+      });
+  }
+}
+
+function createLabel(fd, tagName = 'label') {
+  const label = document.createElement(tagName);
+  label.setAttribute('for', fd.Id);
+  label.className = 'field-label';
+  label.textContent = fd.Label || '';
+  if (fd.Tooltip) {
+    label.title = fd.Tooltip;
+  }
+  return label;
+}
+
+function createHelpText(fd) {
+  const div = document.createElement('div');
+  div.className = 'field-description';
+  div.setAttribute('aria-live', 'polite');
+  div.innerText = fd.Description;
+  div.id = `${fd.Id}-description`;
+  return div;
+}
+
+function createFieldWrapper(fd, tagName = 'div') {
+  const fieldWrapper = document.createElement(tagName);
+  const nameStyle = fd.Name ? ` form-${fd.Name}` : '';
+  const fieldId = `form-${fd.Type}-wrapper${nameStyle}`;
+  fieldWrapper.className = fieldId;
+  if (fd.Fieldset) {
+    fieldWrapper.dataset.fieldset = fd.Fieldset;
+  }
+  if (fd.Mandatory.toLowerCase() === 'true') {
+    fieldWrapper.dataset.required = '';
+  }
+  fieldWrapper.classList.add('field-wrapper');
+  fieldWrapper.append(createLabel(fd));
+  return fieldWrapper;
+}
+
+function createButton(fd) {
+  const wrapper = createFieldWrapper(fd);
+  const button = document.createElement('button');
+  button.textContent = fd.Label;
+  button.type = fd.Type;
+  button.classList.add('button');
+  button.dataset.redirect = fd.Extra || '';
+  button.id = fd.Id;
+  button.name = fd.Name;
+  wrapper.replaceChildren(button);
+  return wrapper;
+}
+function createSubmit(fd) {
+  const wrapper = createButton(fd);
+  return wrapper;
+}
+
+function createInput(fd) {
+  const input = document.createElement('input');
+  input.type = fd.Type;
+  
+  setPlaceholder(input, fd);
+  setConstraints(input, fd);
+  return input;
+}
+
+const withFieldWrapper = (element) => (fd) => {
+  const wrapper = createFieldWrapper(fd);
+  wrapper.append(element(fd));
+  return wrapper;
+};
+
+const createTextArea = withFieldWrapper((fd) => {
+  const input = document.createElement('textarea');
+  setPlaceholder(input, fd);
+  return input;
+});
+
+const createSelect = withFieldWrapper((fd) => {
   const select = document.createElement('select');
-  select.id = fd.Field_Id;
-  select.name = fd.Field;
   if (fd.Placeholder) {
     const ph = document.createElement('option');
     ph.textContent = fd.Placeholder;
@@ -15,258 +178,170 @@ function createSelect(fd) {
     option.value = o.trim();
     select.append(option);
   });
-  if (fd.Mandatory === 'x') {
-    select.setAttribute('required', 'required');
-  }
   return select;
+});
+
+function createRadio(fd) {
+  const wrapper = createFieldWrapper(fd);
+  wrapper.insertAdjacentElement('afterbegin', createInput(fd));
+  return wrapper;
 }
 
-function validateField(fe) {
-  fe.checkValidity();
-  if (fe.type === 'checkbox') {
-    const formData = new FormData(document.querySelector('form'));
-    [...fe.form.elements].forEach((fe2) => {
-      if (fe.name === fe2.name) {
-        if (!formData.has(fe.name)) {
-          fe2.setCustomValidity('Please check this box if you want to proceed');
-          fe2.setAttribute('aria-invalid', true);
-        } else {
-          fe2.setCustomValidity('');
-          fe2.removeAttribute('aria-invalid');
-        }
-      }
+const createOutput = withFieldWrapper((fd) => {
+  const output = document.createElement('output');
+  output.name = fd.Name;
+  output.dataset.fieldset = fd.Fieldset ? fd.Fieldset : '';
+  output.innerText = fd.Value;
+  return output;
+});
+
+function createHidden(fd) {
+  const input = document.createElement('input');
+  input.type = 'hidden';
+  input.id = fd.Id;
+  input.name = fd.Name;
+  input.value = fd.Value;
+  return input;
+}
+
+function createLegend(fd) {
+  return createLabel(fd, 'legend');
+}
+
+function createFieldSet(fd) {
+  const wrapper = createFieldWrapper(fd, 'fieldset');
+  wrapper.name = fd.Name;
+  wrapper.replaceChildren(createLegend(fd));
+  return wrapper;
+}
+
+function groupFieldsByFieldSet(form) {
+  const fieldsets = form.querySelectorAll('fieldset');
+  fieldsets?.forEach((fieldset) => {
+    const fields = form.querySelectorAll(`[data-fieldset="${fieldset.name}"`);
+    fields?.forEach((field) => {
+      fieldset.append(field);
     });
-  } else if (fe.validity.patternMismatch) {
-    fe.setCustomValidity('Please enter a value');
-  }
-}
-
-function validate(form) {
-  const invalid = [];
-  [...form.elements].forEach((fe) => {
-    fe.checkValidity();
-    if (fe.type === 'checkbox') {
-      const formData = new FormData(document.querySelector('form'));
-      if (!formData.has(fe.name)) {
-        invalid.push(fe);
-        fe.setCustomValidity('Please check this box if you want to proceed');
-        fe.setAttribute('aria-invalid', true);
-      } else {
-        fe.setCustomValidity('');
-        fe.removeAttribute('aria-invalid');
-      }
-    } else if (fe.validity.patternMismatch) {
-      invalid.push(fe);
-      fe.setCustomValidity('Please enter a value');
-    }
   });
-  return invalid;
 }
 
-function constructPayload(form) {
-  const payload = {};
-  [...form.elements].forEach((fe) => {
-    if (fe.type === 'checkbox') {
-      if (fe.checked) {
-        if (payload[fe.name]) {
-          payload[fe.name] = `${payload[fe.name]},${fe.value}`;
-        } else {
-          payload[fe.name] = fe.value;
-        }
-      }
-    } else if (fe.name) {
-      payload[fe.name] = fe.value;
-    }
-  });
-  return payload;
-}
-
-async function submitForm(form) {
-  const button = form.querySelector('.form-submit-wrapper button');
-  button.setAttribute('disabled', '');
-
-  const invalid = validate(form);
-  if (invalid && invalid.length > 0) {
-    button.removeAttribute('disabled');
-    return false;
-  }
-  const payload = constructPayload(form);
-  const resp = await fetch(form.dataset.action, {
-    method: 'POST',
-    cache: 'no-cache',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ data: payload }),
-  });
-  await resp.text();
-  return payload;
-}
-
-function createButton(fd) {
-  const button = document.createElement('button');
-  button.textContent = fd.Label;
-  button.classList.add('button');
-  if (fd.Type === 'submit') {
-    button.addEventListener('click', async (event) => {
-      const form = button.closest('form');
-      if (form.checkValidity()) {
-        event.preventDefault();
-        const status = await submitForm(form);
-        if (status) {
-          const success = form.closest('.form.block').querySelector('.form-success');
-          if (success) {
-            success.classList.remove('hidden');
-            form.closest('.form.block').querySelector('.button-container').classList.add('hidden');
-          } else {
-            const redirectTo = fd.Extra;
-            window.location.href = redirectTo;
-          }
-        }
-      }
-    });
-  }
-  return button;
+function createPlainText(fd) {
+  const paragraph = document.createElement('p');
+  const nameStyle = fd.Name ? `form-${fd.Name}` : '';
+  paragraph.className = nameStyle;
+  paragraph.dataset.fieldset = fd.Fieldset ? fd.Fieldset : '';
+  paragraph.textContent = fd.Label;
+  return paragraph;
 }
 
 function createHeading(fd) {
-  if (fd.Style && fd.Style === 'p') {
-    const paragraph = document.createElement('p');
-    paragraph.textContent = fd.Label;
-    return paragraph;
-  }
-  const heading = document.createElement('h3');
+  const heading = document.createElement('h4');
   heading.textContent = fd.Label;
   return heading;
 }
 
-function createInput(fd) {
-  const input = document.createElement('input');
-  input.type = fd.Type;
-  input.id = fd.Field_Id;
-  input.name = fd.Field;
-  if (fd.Pattern) {
-    input.setAttribute('pattern', fd.Pattern);
+const getId = (function getId() {
+  const ids = {};
+  return (name) => {
+    ids[name] = ids[name] || 0;
+    const idSuffix = ids[name] ? `-${ids[name]}` : '';
+    ids[name] += 1;
+    return `${name}${idSuffix}`;
+  };
+}());
+
+const fieldRenderers = {
+  radio: createRadio,
+  checkbox: createRadio,
+  textarea: createTextArea,
+  select: createSelect,
+  button: createButton,
+  submit: createSubmit,
+  output: createOutput,
+  hidden: createHidden,
+  fieldset: createFieldSet,
+  plaintext: createPlainText,
+  heading:createHeading,
+};
+
+function renderField(fd) {
+  const renderer = fieldRenderers[fd.Type];
+  let field;
+  if (typeof renderer === 'function') {
+    field = renderer(fd);
+  } else {
+    field = createFieldWrapper(fd);
+    field.append(createInput(fd));
   }
-  if (fd.Extra) {
-    input.setAttribute('oninvalid', `this.setCustomValidity('${fd.Extra}')`);
-    input.setAttribute('oninput', 'this.setCustomValidity(\'\')');
+  if (fd.Description) {
+    field.append(createHelpText(fd));
   }
-  input.setAttribute('placeholder', fd.Placeholder);
-  if (fd.Type === 'checkbox') {
-    input.setAttribute('value', fd.Label);
-  }
-  if (fd.Mandatory === 'x') {
-    input.setAttribute('required', 'required');
-  }
-  input.addEventListener('input', (event) => {
-    validateField(event.target);
-  });
-  return input;
+  return field;
 }
 
-function createTextArea(fd) {
-  const input = document.createElement('textarea');
-  input.id = fd.Field_Id;
-  input.name = fd.Field;
-  input.setAttribute('placeholder', fd.Placeholder);
-  if (fd.Mandatory === 'x') {
-    input.setAttribute('required', 'required');
-  }
-  return input;
-}
-
-function createLabel(fd) {
-  const label = document.createElement('label');
-  label.setAttribute('for', fd.Field_Id ? fd.Field_Id : fd.Field);
-  label.textContent = fd.Label;
-  label.setAttribute('hidden', 'hidden');
-  if (fd.Mandatory === 'x') {
-    label.classList.add('required');
-  }
-  return label;
-}
-
-function applyRules(form, rules) {
-  const payload = constructPayload(form);
-  rules.forEach((field) => {
-    const { type, condition: { key, operator, value } } = field.rule;
-    if (type === 'visible') {
-      if (operator === 'eq') {
-        if (payload[key] === value) {
-          form.querySelector(`.${field.fieldId}`).classList.remove('hidden');
-        } else {
-          form.querySelector(`.${field.fieldId}`).classList.add('hidden');
-        }
-      }
+async function decorateFormLayout(block, form) {
+  if (block.classList.contains('wizard')) {
+    try {
+      (await import('./wizard.js')).default(form);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`Failed to load wizard ${err}`);
     }
-  });
+  }
+}
+
+async function fetchData(url) {
+  const resp = await fetch(url);
+  const json = await resp.json();
+  return json.data.map((fd) => ({
+    ...fd,
+    Id: fd.Id || getId(fd.Name),
+    Value: fd.Value || '',
+  }));
+}
+
+async function fetchForm(pathname) {
+  // get the main form
+  const jsonData = await fetchData(pathname);
+  return jsonData;
 }
 
 async function createForm(formURL) {
   const { pathname } = new URL(formURL);
-  const resp = await fetch(pathname);
-  const json = await resp.json();
+  const data = await fetchForm(pathname);
   const form = document.createElement('form');
-  const rules = [];
-  // eslint-disable-next-line prefer-destructuring
-  form.dataset.action = pathname.split('.json')[0];
-  json.data.forEach((fd) => {
-    fd.Type = fd.Type || 'text';
-    const fieldWrapper = document.createElement('div');
-    const style = fd.Style ? ` form-${fd.Style}` : '';
-    const fieldId = `form-${fd.Type}-wrapper${style}`;
-    fieldWrapper.className = fieldId;
-    fieldWrapper.classList.add('field-wrapper');
-    switch (fd.Type) {
-      case 'select':
-        fieldWrapper.append(createLabel(fd));
-        fieldWrapper.append(createSelect(fd));
-        break;
-      case 'heading':
-        fieldWrapper.append(createHeading(fd));
-        break;
-      case 'checkbox':
-        fieldWrapper.append(createInput(fd));
-        fieldWrapper.append(createLabel(fd));
-        break;
-      case 'text-area':
-        fieldWrapper.append(createLabel(fd));
-        fieldWrapper.append(createTextArea(fd));
-        break;
-      case 'submit':
-        fieldWrapper.append(createButton(fd));
-        break;
-      default:
-        fieldWrapper.append(createLabel(fd));
-        fieldWrapper.append(createInput(fd));
+  data.forEach((fd) => {
+    const el = renderField(fd);
+    const input = el.querySelector('input,textarea,select');
+    if (fd.Mandatory && fd.Mandatory.toLowerCase() === 'true') {
+      input.setAttribute('required', 'required');
     }
-
-    if (fd.Rules) {
-      try {
-        rules.push({ fieldId, rule: JSON.parse(fd.Rules) });
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn(`Invalid Rule ${fd.Rules}: ${e}`);
+    if (input) {
+      input.id = fd.Id;
+      input.name = fd.Name;
+      input.value = fd.Value;
+      if (fd.Description) {
+        input.setAttribute('aria-describedby', `${fd.Id}-description`);
       }
     }
-    form.append(fieldWrapper);
+    form.append(el);
   });
-
-  form.addEventListener('change', () => applyRules(form, rules));
-  applyRules(form, rules);
-
-  return (form);
+  groupFieldsByFieldSet(form);
+  // eslint-disable-next-line prefer-destructuring
+  form.dataset.action = pathname.split('.json')[0];
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    e.submitter.setAttribute('disabled', '');
+    handleSubmit(form);
+  });
+  return form;
 }
 
 export default async function decorate(block) {
-  const form = block.querySelector('a[href$=".json"]');
-  if (form) {
-    form.replaceWith(await createForm(form.href));
-  }
-  const successDiv = block.querySelector('div>div:nth-child(2)');
-  if (successDiv) {
-    successDiv.classList.add('form-success');
-    successDiv.classList.add('hidden');
+  const formLink = block.querySelector('a[href$=".json"]');
+  if (formLink) {
+    const form = await createForm(formLink.href);
+    await decorateFormLayout(block, form);
+    formLink.replaceWith(form);
   }
 }
